@@ -695,7 +695,7 @@ class TestCreateScaleOffset(BaseDataset):
         range = 20 * 10 ** scalefac
         testdata = (np.random.rand(*shape) - 0.5) * range
 
-        dset = self.f.create_dataset('foo', shape, dtype=float, scaleoffset=scalefac)
+        dset = self.f.create_dataset('foo', shape, dtype=np.float64, scaleoffset=scalefac)
 
         # Dataset reports that scaleoffset is in use
         assert dset.scaleoffset is not None
@@ -718,10 +718,10 @@ class TestCreateScaleOffset(BaseDataset):
 
         nbits = 12
         shape = (100, 300)
-        testdata = np.random.randint(0, 2 ** nbits - 1, size=shape)
+        testdata = np.random.randint(0, 2 ** nbits - 1, size=shape, dtype=np.int64)
 
         # Create dataset; note omission of nbits (for library-determined precision)
-        dset = self.f.create_dataset('foo', shape, dtype=int, scaleoffset=True)
+        dset = self.f.create_dataset('foo', shape, dtype=np.int64, scaleoffset=True)
 
         # Dataset reports scaleoffset enabled
         assert dset.scaleoffset is not None
@@ -739,9 +739,9 @@ class TestCreateScaleOffset(BaseDataset):
 
         nbits = 12
         shape = (100, 300)
-        testdata = np.random.randint(0, 2 ** nbits, size=shape)
+        testdata = np.random.randint(0, 2 ** nbits, size=shape, dtype=np.int64)
 
-        dset = self.f.create_dataset('foo', shape, dtype=int, scaleoffset=nbits)
+        dset = self.f.create_dataset('foo', shape, dtype=np.int64, scaleoffset=nbits)
 
         # Dataset reports scaleoffset enabled with correct precision
         self.assertTrue(dset.scaleoffset == 12)
@@ -759,9 +759,9 @@ class TestCreateScaleOffset(BaseDataset):
 
         nbits = 12
         shape = (100, 300)
-        testdata = np.random.randint(0, 2 ** (nbits + 1) - 1, size=shape)
+        testdata = np.random.randint(0, 2 ** (nbits + 1) - 1, size=shape, dtype=np.int64)
 
-        dset = self.f.create_dataset('foo', shape, dtype=int, scaleoffset=nbits)
+        dset = self.f.create_dataset('foo', shape, dtype=np.int64, scaleoffset=nbits)
 
         # Dataset reports scaleoffset enabled with correct precision
         self.assertTrue(dset.scaleoffset == 12)
@@ -873,6 +873,18 @@ class TestExternal(BaseDataset):
             with self.assertRaises(exc_type):
                 self.f.create_dataset('foo', shape, external=external)
 
+    def test_create_expandable(self):
+        """ Create expandable external dataset """
+
+        ext_file = self.mktemp()
+        shape = (128, 64)
+        maxshape = (None, 64)
+        exp_dset = self.f.create_dataset('foo', shape=shape, maxshape=maxshape,
+                                         external=ext_file)
+        assert exp_dset.chunks is None
+        assert exp_dset.shape == shape
+        assert exp_dset.maxshape == maxshape
+
 
 class TestAutoCreate(BaseDataset):
 
@@ -912,7 +924,7 @@ class TestAutoCreate(BaseDataset):
     def test_string_fixed(self):
         """ Assignment of fixed-length byte string produces a fixed-length
         ascii dataset """
-        self.f['x'] = np.string_("Hello there")
+        self.f['x'] = np.bytes_("Hello there")
         ds = self.f['x']
         self.assert_string_type(ds, h5py.h5t.CSET_ASCII, variable=False)
         self.assertEqual(ds.id.get_type().get_size(), 11)
@@ -973,6 +985,16 @@ class TestChunkIterator(BaseDataset):
 
         expected = ((slice(48, 52, 1), slice(40, 50, 1)),)
         self.assertEqual(list(dset.iter_chunks(np.s_[48:52,40:50])), list(expected))
+
+    def test_2d_partial_slice(self):
+        dset = self.f.create_dataset("foo", (5,5), chunks=(2,2))
+        expected = ((slice(3, 4, 1), slice(3, 4, 1)),
+                   (slice(3, 4, 1), slice(4, 5, 1)),
+                   (slice(4, 5, 1), slice(3, 4, 1)),
+                   (slice(4, 5, 1), slice(4, 5, 1)))
+        sel = slice(3,5)
+        self.assertEqual(list(dset.iter_chunks((sel, sel))), list(expected))
+
 
 
 class TestResize(BaseDataset):
@@ -1224,7 +1246,7 @@ class TestStrings(BaseDataset):
         data = b"Hello\xef"
         ds[0] = data
         out = ds[0]
-        self.assertEqual(type(out), np.string_)
+        self.assertEqual(type(out), np.bytes_)
         self.assertEqual(out, data)
 
     def test_retrieve_vlen_unicode(self):
@@ -1763,6 +1785,13 @@ class TestVlen(BaseDataset):
 
         assert all(self.f['nc2'][0] == y[::2]), f"{self.f['nc2'][0]} != {y[::2]}"
 
+    def test_asstr_array_dtype(self):
+        dt = h5py.string_dtype(encoding='ascii')
+        fill_value = b'bar'
+        ds = self.f.create_dataset('x', (100,), dtype=dt, fillvalue=fill_value)
+        with pytest.raises(TypeError):
+            np.array(ds.asstr(), dtype=int)
+
 
 class TestLowOpen(BaseDataset):
 
@@ -1991,3 +2020,34 @@ class TestVirtualPrefix(BaseDataset):
         self.assertEqual(virtual_prefix, virtual_prefix_readback)
         self.assertIsInstance(dset, Dataset)
         self.assertEqual(dset.shape, (10, 3))
+
+
+
+COPY_IF_NEEDED = False if np.__version__.startswith("1.") else None
+
+VIEW_GETTERS = {
+    "ds": lambda ds: ds,
+    "astype": lambda ds: ds.astype(dtype=object),
+    "asstr": lambda ds: ds.asstr(),
+}
+
+@pytest.mark.parametrize("copy", [True, COPY_IF_NEEDED])
+@pytest.mark.parametrize("view_getter", VIEW_GETTERS.values(), ids=VIEW_GETTERS.keys())
+def test_array_copy(view_getter, copy, writable_file):
+    dt = h5py.string_dtype(encoding='ascii')
+    fill_value = b'bar'
+    ds = writable_file.create_dataset('x', (10,), dtype=dt, fillvalue=fill_value)
+    np.array(view_getter(ds), copy=copy)
+
+@pytest.mark.skipif(
+    np.__version__.startswith("1."),
+    reason="forbidding copies requires numpy 2",
+)
+@pytest.mark.parametrize("view_getter", VIEW_GETTERS.values(), ids=VIEW_GETTERS.keys())
+def test_array_copy_false(view_getter, writable_file):
+    dt = h5py.string_dtype(encoding='ascii')
+    fill_value = b'bar'
+    ds = writable_file.create_dataset('x', (10,), dtype=dt, fillvalue=fill_value)
+    view = view_getter(ds)
+    with pytest.raises(ValueError):
+        np.array(view, copy=False)

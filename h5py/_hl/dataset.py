@@ -213,10 +213,16 @@ class AstypeWrapper:
         """
         return len(self._dset)
 
-    def __array__(self, dtype=None):
+    def __array__(self, dtype=None, copy=True):
+        if copy is False:
+            raise ValueError(
+                f"AstypeWrapper.__array__ received {copy=} "
+                f"but memory allocation cannot be avoided on read"
+            )
+
         data = self[:]
         if dtype is not None:
-            data = data.astype(dtype)
+            return data.astype(dtype, copy=False)
         return data
 
 
@@ -251,7 +257,16 @@ class AsStrWrapper:
         """
         return len(self._dset)
 
-    def __array__(self):
+    def __array__(self, dtype=None, copy=True):
+        if dtype not in (None, object):
+            raise TypeError(
+                "AsStrWrapper.__array__ doesn't support the dtype argument"
+            )
+        if copy is False:
+            raise ValueError(
+                f"AsStrWrapper.__array__ received {copy=} "
+                f"but memory allocation cannot be avoided on read"
+            )
         return numpy.array([
             b.decode(self.encoding, self.errors) for b in self._dset
         ], dtype=object).reshape(self._dset.shape)
@@ -268,11 +283,17 @@ class FieldsWrapper:
             names = [names]
         self.read_dtype = readtime_dtype(prior_dtype, names)
 
-    def __array__(self, dtype=None):
+    def __array__(self, dtype=None, copy=True):
+        if copy is False:
+            raise ValueError(
+                f"FieldsWrapper.__array__ received {copy=} "
+                f"but memory allocation cannot be avoided on read"
+            )
         data = self[:]
         if dtype is not None:
-            data = data.astype(dtype)
-        return data
+            return data.astype(dtype, copy=False)
+        else:
+            return data
 
     def __getitem__(self, args):
         data = self._dset.__getitem__(args, new_dtype=self.read_dtype)
@@ -388,7 +409,7 @@ class ChunkIterator:
 
             if dim > 0:
                 # reset to the start and continue iterating with higher dimension
-                self._chunk_index[dim] = 0
+                self._chunk_index[dim] = s.start // self._layout[dim]
             dim -= 1
         return tuple(slices)
 
@@ -865,11 +886,11 @@ class Dataset(HLObject):
         if vlen is not None and vlen not in (bytes, str):
             try:
                 val = numpy.asarray(val, dtype=vlen)
-            except ValueError:
+            except (ValueError, TypeError):
                 try:
                     val = numpy.array([numpy.array(x, dtype=vlen)
                                        for x in val], dtype=self.dtype)
-                except ValueError:
+                except (ValueError, TypeError):
                     pass
             if vlen == val.dtype:
                 if val.ndim > 1:
@@ -1049,11 +1070,16 @@ class Dataset(HLObject):
                 self.id.write(mspace, fspace, source, dxpl=self._dxpl)
 
     @with_phil
-    def __array__(self, dtype=None):
+    def __array__(self, dtype=None, copy=True):
         """ Create a Numpy array containing the whole dataset.  DON'T THINK
         THIS MEANS DATASETS ARE INTERCHANGEABLE WITH ARRAYS.  For one thing,
         you have to read the whole dataset every time this method is called.
         """
+        if copy is False:
+            raise ValueError(
+                f"Dataset.__array__ received {copy=} "
+                f"but memory allocation cannot be avoided on read"
+            )
         arr = numpy.zeros(self.shape, dtype=self.dtype if dtype is None else dtype)
 
         # Special case for (0,)*-shape datasets
